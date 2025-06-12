@@ -12,9 +12,17 @@ __global__ void reflect101Kernel(const T *src, int srcW, int srcH, size_t srcSte
     return;
 
   // --------- 计算镜像坐标 (Reflect-101) ----------
-  int xm = (x < padX) ? (padX * 2 - x - 1) : (x >= padX + srcW) ? (2 * (padX + srcW) - x - 1) : (x - padX);
+  int xm = x - padX;
+  if (xm < 0)
+    xm = -xm - 1;
+  else if (xm >= srcW)
+    xm = 2 * srcW - xm - 1;
 
-  int ym = (y < padY) ? (padY * 2 - y - 1) : (y >= padY + srcH) ? (2 * (padY + srcH) - y - 1) : (y - padY);
+  int ym = y - padY;
+  if (ym < 0)
+    ym = -ym - 1;
+  else if (ym >= srcH)
+    ym = 2 * srcH - ym - 1;
 
   const T *src_line = (const T *)((const unsigned char *)src + ym * srcStep);
   T *dst_line = (T *)((unsigned char *)dst + y * dstStep);
