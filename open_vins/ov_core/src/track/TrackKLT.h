@@ -57,7 +57,8 @@ protected:
   int grid_x, grid_y;
   int min_px_dist;
   int pyr_levels = 5;
-  cv::Size win_size = cv::Size(15, 15);
+  // Padding used in GPU pyramid matches LK window
+  cv::Size win_size = cv::Size(21, 21);
 
   std::map<size_t, std::vector<cv::Mat>> img_pyramid_last;
   std::map<size_t, cv::Mat> img_curr;
