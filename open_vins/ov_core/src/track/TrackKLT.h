@@ -46,12 +46,19 @@ protected:
                         std::vector<cv::KeyPoint> &pts1,
                         size_t id0, size_t id1,
                         std::vector<uchar> &mask_out);
+  void perform_matching_gpu(const std::vector<cv::cuda::GpuMat> &img0pyr,
+                            const std::vector<cv::cuda::GpuMat> &img1pyr,
+                            std::vector<cv::KeyPoint> &pts0,
+                            std::vector<cv::KeyPoint> &pts1,
+                            size_t id0, size_t id1,
+                            std::vector<uchar> &mask_out);
 
   int threshold;
   int grid_x, grid_y;
   int min_px_dist;
   int pyr_levels = 5;
-  cv::Size win_size = cv::Size(15, 15);
+  // Padding used in GPU pyramid matches LK window
+  cv::Size win_size = cv::Size(21, 21);
 
   std::map<size_t, std::vector<cv::Mat>> img_pyramid_last;
   std::map<size_t, cv::Mat> img_curr;

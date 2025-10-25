@@ -129,6 +129,7 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     std::lock_guard<std::mutex> lckv(mtx_last_vars);
     img_last[cam_id] = img;
     img_pyramid_last[cam_id] = imgpyr;
+    d_img_pyramid_last_[cam_id] = d_img_pyramid_curr_[cam_id];
     img_mask_last[cam_id] = mask;
     pts_last[cam_id] = good_left;
     ids_last[cam_id] = good_ids_left;
@@ -148,7 +149,8 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
   std::vector<cv::KeyPoint> pts_left_new = pts_left_old;
 
   // Lets track temporally
-  perform_matching(img_pyramid_last[cam_id], imgpyr, pts_left_old, pts_left_new, cam_id, cam_id, mask_ll);
+  perform_matching_gpu(d_img_pyramid_last_[cam_id], d_img_pyramid_curr_[cam_id],
+                       pts_left_old, pts_left_new, cam_id, cam_id, mask_ll);
   assert(pts_left_new.size() == ids_left_old.size());
   rT4 = boost::posix_time::microsec_clock::local_time();
 
@@ -157,6 +159,7 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     std::lock_guard<std::mutex> lckv(mtx_last_vars);
     img_last[cam_id] = img;
     img_pyramid_last[cam_id] = imgpyr;
+    d_img_pyramid_last_[cam_id] = d_img_pyramid_curr_[cam_id];
     img_mask_last[cam_id] = mask;
     pts_last[cam_id].clear();
     ids_last[cam_id].clear();
@@ -196,6 +199,7 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     std::lock_guard<std::mutex> lckv(mtx_last_vars);
     img_last[cam_id] = img;
     img_pyramid_last[cam_id] = imgpyr;
+    d_img_pyramid_last_[cam_id] = d_img_pyramid_curr_[cam_id];
     img_mask_last[cam_id] = mask;
     pts_last[cam_id] = good_left;
     ids_last[cam_id] = good_ids_left;
@@ -243,6 +247,8 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     img_last[cam_id_right] = img_right;
     img_pyramid_last[cam_id_left] = imgpyr_left;
     img_pyramid_last[cam_id_right] = imgpyr_right;
+    d_img_pyramid_last_[cam_id_left] = d_img_pyramid_curr_[cam_id_left];
+    d_img_pyramid_last_[cam_id_right] = d_img_pyramid_curr_[cam_id_right];
     img_mask_last[cam_id_left] = mask_left;
     img_mask_last[cam_id_right] = mask_right;
     pts_last[cam_id_left] = good_left;
@@ -273,10 +279,13 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
   parallel_for_(cv::Range(0, 2), LambdaBody([&](const cv::Range &range) {
                   for (int i = range.start; i < range.end; i++) {
                     bool is_left = (i == 0);
-                    perform_matching(img_pyramid_last[is_left ? cam_id_left : cam_id_right], is_left ? imgpyr_left : imgpyr_right,
-                                     is_left ? pts_left_old : pts_right_old, is_left ? pts_left_new : pts_right_new,
-                                     is_left ? cam_id_left : cam_id_right, is_left ? cam_id_left : cam_id_right,
-                                     is_left ? mask_ll : mask_rr);
+                    perform_matching_gpu(d_img_pyramid_last_[is_left ? cam_id_left : cam_id_right],
+                                         is_left ? d_img_pyramid_curr_[cam_id_left] : d_img_pyramid_curr_[cam_id_right],
+                                         is_left ? pts_left_old : pts_right_old,
+                                         is_left ? pts_left_new : pts_right_new,
+                                         is_left ? cam_id_left : cam_id_right,
+                                         is_left ? cam_id_left : cam_id_right,
+                                         is_left ? mask_ll : mask_rr);
                   }
                 }));
   rT4 = boost::posix_time::microsec_clock::local_time();
@@ -301,6 +310,8 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     img_last[cam_id_right] = img_right;
     img_pyramid_last[cam_id_left] = imgpyr_left;
     img_pyramid_last[cam_id_right] = imgpyr_right;
+    d_img_pyramid_last_[cam_id_left] = d_img_pyramid_curr_[cam_id_left];
+    d_img_pyramid_last_[cam_id_right] = d_img_pyramid_curr_[cam_id_right];
     img_mask_last[cam_id_left] = mask_left;
     img_mask_last[cam_id_right] = mask_right;
     pts_last[cam_id_left].clear();
@@ -385,6 +396,8 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     img_last[cam_id_right] = img_right;
     img_pyramid_last[cam_id_left] = imgpyr_left;
     img_pyramid_last[cam_id_right] = imgpyr_right;
+    d_img_pyramid_last_[cam_id_left] = d_img_pyramid_curr_[cam_id_left];
+    d_img_pyramid_last_[cam_id_right] = d_img_pyramid_curr_[cam_id_right];
     img_mask_last[cam_id_left] = mask_left;
     img_mask_last[cam_id_right] = mask_right;
     pts_last[cam_id_left] = good_left;
@@ -855,7 +868,20 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr,
     d_curr.emplace_back(); d_curr.back().upload(img1pyr[l], cv_stream_);
   }
 
-  // 2) 准备特征点（1×N）并声明所有输出
+  // 2) 调用 GPU 版匹配
+  perform_matching_gpu(d_prev, d_curr, kpts0, kpts1, id0, id1, mask_out);
+}
+
+void TrackKLT::perform_matching_gpu(const std::vector<cv::cuda::GpuMat> &img0pyr,
+                                    const std::vector<cv::cuda::GpuMat> &img1pyr,
+                                    std::vector<cv::KeyPoint> &kpts0,
+                                    std::vector<cv::KeyPoint> &kpts1,
+                                    size_t id0, size_t id1,
+                                    std::vector<uchar> &mask_out) {
+  assert(kpts0.size() == kpts1.size());
+  if (kpts0.empty()) return;
+
+  // 准备特征点（1×N）并声明所有输出
   std::vector<cv::Point2f> pts0f; pts0f.reserve(kpts0.size());
   for (auto &kp : kpts0) pts0f.push_back(kp.pt);
   int N = (int)pts0f.size();
@@ -864,19 +890,18 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr,
   cv::cuda::GpuMat d_pts0(1, N, CV_32FC2), d_pts1, d_status, d_error;
   d_pts0.upload(ptsMat, cv_stream_);
 
-  // 3) GPU LK 计算
+  // GPU LK 计算
   if (!gpu_lk_)
     gpu_lk_ = cv::cuda::SparsePyrLKOpticalFlow::create(win_size, pyr_levels);
-  gpu_lk_->calc(d_prev, d_curr, d_pts0, d_pts1, d_status, d_error, cv_stream_);
+  gpu_lk_->calc(img0pyr, img1pyr, d_pts0, d_pts1, d_status, d_error, cv_stream_);
 
-
-  // 4) 下载状态和新点
+  // 下载状态和新点
   cv::Mat status_mat, pts1_mat;
   d_status.download(status_mat, cv_stream_);
   d_pts1.download(pts1_mat,   cv_stream_);
   cv_stream_.waitForCompletion();
 
-  // 5) 填回 mask_klt 和 kpts1
+  // 填回 mask_klt 和 kpts1
   std::vector<uchar> mask_klt;
   mask_klt.assign(status_mat.begin<uchar>(), status_mat.end<uchar>());
 
@@ -885,7 +910,7 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr,
   for (size_t i = 0; i < new_pts1.size(); ++i)
     kpts1[i].pt = new_pts1[i];
 
-  // 6) 去畸变，为 RANSAC 做准备
+  // 去畸变，为 RANSAC 做准备
   std::vector<cv::Point2f> pts0_n, pts1_n;
   pts0_n.reserve(pts0f.size());
   pts1_n.reserve(new_pts1.size());
@@ -894,19 +919,19 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr,
     pts1_n.push_back(camera_calib.at(id1)->undistort_cv(new_pts1[i]));
   }
 
-  // 7) RANSAC 剔除外点
+  // RANSAC 剔除外点
   double f0 = std::max(camera_calib.at(id0)->get_K()(0,0), camera_calib.at(id0)->get_K()(1,1));
   double f1 = std::max(camera_calib.at(id1)->get_K()(0,0), camera_calib.at(id1)->get_K()(1,1));
   double fmax = std::max(f0, f1);
   std::vector<uchar> mask_rsc;
   cv::findFundamentalMat(pts0_n, pts1_n, cv::FM_RANSAC, 2.0/fmax, 0.999, mask_rsc);
 
-  // 8) 合并 mask_klt 与 mask_rsc，输出到 mask_out
+  // 合并 mask_klt 与 mask_rsc，输出到 mask_out
   mask_out.resize(pts0f.size());
   for (size_t i = 0; i < pts0f.size(); ++i) {
     mask_out[i] = (uchar)(mask_klt[i] && mask_rsc[i]);
   }
 
-  // 9) 更新 kpts0（已在 feed 中更新）和 kpts1 的 pt 已在第5步更新完毕
+  // 更新 kpts0（已在 feed 中更新）和 kpts1 的 pt 已在上面完成
 }
 
